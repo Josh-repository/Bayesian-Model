@@ -1,0 +1,500 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+# Introduction:
+The following report covers data description, issues, solution to overcome those issues, code, result and its interpretation. Here, I covered the topics of Monte Carlo Markov Chain for sampling, Hierarchial modelling, Gibbs sampler to estimate posterior distribution, Exploratory Data analysis and Bayesian Logestic inference part.
+
+# Import dataset and its description:
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+df <- read.csv("simpsons.csv")
+head(df)
+```
+To cover the first part of project, I made use of Simpsons dataset with three variables namely, 
+Episode_name: Gives the name of each episode of datatype factor.
+Season: Provides season number of datatype int.
+Rating: Provides Imdb rating associated with each episodes of datatype dlb(double, signifies integer with decimal value)
+
+# Initial Checks and Distribution Plot:
+```{r cars, echo=FALSE}
+# Checking for any missing values in the dataset.
+sum(is.na(df))
+# Plotting the distribution graph for Target column[Rating].
+x <- df$Rating
+h<-hist(x, breaks=10, col="red", xlab="Episodes Rating",
+   main="Histogram with Normal Curve")
+xfit<-seq(min(x),max(x),length=200)
+yfit<-dnorm(xfit,mean=mean(x),sd=sd(x))
+yfit <- yfit*diff(h$mids[1:2])*length(x)
+lines(xfit, yfit, col="blue", lwd=2)
+```
+From the above histogram, it's obivious that the 'Rating' column of the given dataset is continous and more kind of normal distribution form with marginal left skewness. This is because more data are accumulated on right side.
+
+# Two mean comparison.
+## Data Preprocessing:
+```{r echo=TRUE}
+df_temp <- df[-c(1)] # Removing Episode_name Column which is not required.
+# To extract all ratings of episodes in which we are interested I.e. '2' and '6'
+vc <- c(2, 6) # Creating a vector to hold values 2 and 6.
+df1<-df_temp[df_temp$Season %in% vc,] # Extracting data related to seasons '2' and '6' and its corresponding rating into annother dataframe 
+row.names(df1) <- NULL
+dim(df1) # Dimension of pruned dataset. 
+head(df1) 
+df1$Season <- factor(df1$Season) # Since the values present in Season column are treated as categorical, we convert it to factor.
+```
+## Data distribution plot:
+```{r echo=FALSE}
+# Plot and see the distribution of data.
+library(ggplot2)
+ggplot(df1) + geom_boxplot(aes(Season, Rating, fill = Season)) + geom_jitter(aes(Season, Rating, shape = Season))
+```
+From the above boxplot, one can say that the variance associated with both the groups are almost similar, by negelcting one abnormal observation noted in group 6 with rating score of less than 6. The median in group 6 is slightly shifted towards upper end signifying a marginal skewness in the distribution.  Apart from that it is difficult to interpret/conclude any information regarding the mean associated with each group.   
+
+## Direct evaluation and comparison of mean:
+```{r echo=FALSE}
+tapply(df1$Rating, df1$Season, mean)
+tapply(df1$Rating, df1$Season, median)
+tapply(df1$Rating, df1$Season, sd)
+t.test(Rating ~ Season, data=df1, var.equal = TRUE)
+```
+On comparing the mean of each season, we can say that season 6 episodes are better than the season 2. But on taking into the account of Standard deviation, it dilutes our conclusion of season 6 is better than season 2 to a great extent because the SD associated with season 6 is almost twice that of season 2, which accumulates more uncertainity towards the mean score of season 6 thus reducing the probability score.
+
+## Problem with above approach:
+Here we considered only one sample of the data, and we neglected any external variability that can be accounted for.
+For example, the rating of episode depends on the number of reviews posted by the users and there is no restriction for that. As time moves, if the number of negative reviews or positive reviews increases the rating of seasons are subjective to change. Therefore, these variabilitiy also needed to be accounted for.
+
+The solution to incoporate such variability is to consider population means instead of sample means of the distribution. This can be done by MCMC model[Hierarchial], but the variability associated while sampling can be evaluated by several methods.
+One of the classic approach was to make use hypotheses test[two way t-test], with initial belief that true difference in means between these two season is zero and with equal variance. The resultant p value 0.04341 is less than 0.05[5%] signifying that our alternative hypothesis is true i.e true difference in mean is not equal to zero. But the issue with this approach is that it works on threshold value of 0.05 but in practical it is hard to conclude 0.04341 is really different from 0.05341. 
+Therefore, I made use of explicitly modelling the difference, by introducing difference parameter 'del' such that mean of season 2 sample theta 1 is given by population (mean + del + noise) and mean of season 6 sample theta2 is given by population (mean - del + noise).
+
+## Model creation:
+From intial plot distribution it is clear that our target variable rating follows normal distribution. Therefore, the generative model graph for Normal data with two mean and explicit parameter can be defined as,
+![graph_model1](graph_model.jpeg)
+## Code:
+```{r include=FALSE}
+#Comparing the means in a bayesian model.
+set.seed(123)
+compare_2_gibbs <- function(y, ind, mu0 = 5, tau0 = 1/4, del0 = 0, gamma0 = 1/4, a0 = 1, b0 = 50, maxiter = 7000)
+{
+  y1 <- y[ind == 2]
+  y2 <- y[ind == 6]
+  
+  n1 <- length(y1)
+  n2 <- length(y2)
+  
+  ##### starting values
+  mu <- (mean(y1) + mean(y2)) / 2
+  del <- (mean(y1) - mean(y2)) / 2
+  
+  S_rating <- matrix(0, nrow = maxiter, ncol = 3)
+  #####
+  
+  ##### Gibbs sampler
+  an <- a0 + (n1 + n2)/2
+  
+  for(s in 1 : maxiter) 
+  {
+    
+    ##update tau
+    bn <- b0 + 0.5 * (sum((y1 - mu - del) ^ 2) + sum((y2 - mu + del) ^ 2))
+    tau <- rgamma(1, an, bn)
+    ##
+    
+    ##update mu
+    taun <-  tau0 + tau * (n1 + n2)
+    mun <- (tau0 * mu0 + tau * (sum(y1 - del) + sum(y2 + del))) / taun
+    mu <- rnorm(1, mun, sqrt(1/taun))
+    ##
+    
+    ##update del
+    gamman <-  gamma0 + tau*(n1 + n2)
+    deln <- ( del0 * gamma0 + tau * (sum(y1 - mu) - sum(y2 - mu))) / gamman
+    del<-rnorm(1, deln, sqrt(1/gamman))
+    ##
+    
+    ## store parameter values
+    S_rating[s, ] <- c(mu, del, tau)
+  }
+  colnames(S_rating) <- c("mu", "del", "tau")
+  return(S_rating)
+}
+# install.packages('MCMCpack')
+library(MCMCpack)
+fit <- compare_2_gibbs(df1$Rating, as.factor(df1$Season))
+```
+## Result and Graph:
+```{r echo=FALSE}
+# Model Graph
+plot(as.mcmc(fit))
+# Summary
+raftery.diag(as.mcmc(fit))
+apply(fit, 2, mean)
+apply(fit, 2, sd)
+mean(1/sqrt(fit[, 3]))
+sd(1/sqrt(fit[, 3]))
+```
+Explanation:
+The prior values are fixed based on the given dataset. Since the Rating ranges from 0 to 10, I fixed the mu0 value as 5 and with precision score of 1/4. Similar comparisons are made for fixing gamma0 and del0 values.  
+From the trace graph, its clear that the sampling done for all three variables are stationary, mixed well and coverged. From the posterior distribution we got the mean value of mu,tau and del has 8.165032,0.4143450 and -0.1684121.The mean standard deviation of 1.579102 which is on higer side adds lot of uncertainity in predicting the posterior distribution. The difference value of -0.1684121 shows a moderate variation.
+```{r echo=FALSE}
+# To answer 1.a we need to compare the mean from distribution for season 2 and season 6.
+# For that we make random binomila distribution with mu,del and tau value)
+# Predictive mean 1 > mean 2
+set.seed(20301628)
+y1_sim <- rnorm(7000, fit[, 1] + fit[, 2], sd = 1/sqrt(fit[, 3]))
+y2_sim <- rnorm(7000, fit[, 1] - fit[, 2], sd = 1/sqrt(fit[, 3]))
+
+ggplot(data.frame(y_sim_diff = y2_sim - y1_sim)) + stat_bin(aes(y_sim_diff))
+## `stat_bin()` using `bins = 30`. Pick better value with `binwidth`.
+mean(y1_sim)
+mean(y2_sim)
+mean(y2_sim > y1_sim)
+ggplot(data.frame(y1_sim, y2_sim)) + geom_point(aes(y1_sim, y2_sim), alpha = 0.3) + geom_abline(slope = 1, intercept = 0)
+```
+Explanation:
+On comparing the Season 2 and Season 6 means with values 7.986881 and 8.330819 signifies Season 6 performing better.But, from scatter plot graph, there is an equal distribution of data on both side of regression line with slope 1, the mean observed from y_sim_diff distribution was close to zero and the mean probability of season 6 better than season 2 hovers over 55%. All these information does not provide enough proof to say Season 6 episodes are significantly better than Season 2. 
+# Multiple mean Comparison:
+## Dataset:
+```{r echo=FALSE}
+df2<- df[-c(1)] # Removing unwanted explanatory variable Episode_name
+df2$Season <- factor(df2$Season) # Since the values present in Season column are treated as categorical, we convert it to factor.
+nlevels(df2$Season)
+head(df2)
+dim(df2)
+
+```
+## Data distribution Plot:
+```{r echo=FALSE}
+ggplot(df2) + geom_boxplot(aes(x = reorder(Season, Rating, median), Rating, 
+                               fill = reorder(Season, Rating, median)), show.legend=FALSE)
+ggplot(df2, aes(x = reorder(Season, Rating, length))) + stat_count()
+ggplot(df2, aes(Rating)) + stat_bin()
+ggplot(data.frame(size = tapply(df2$Rating, df2$Season, length), 
+                  mean_Rating = tapply(df2$Rating, df2$Season, mean)), 
+       aes(size, mean_Rating)) + geom_point()
+```
+Explanation:
+From boxplot, we face the same issue like two mean comparison its difficult to directlly interpret the mean value and these values are produced from a single sample, So we need to build a model that incoporates the external variability paramater del for each season group in the dataset. 
+The next important parameter that need to be addressed in case of multiple group parameters is group size. For example, from count vs reorder(Season,Rating, length) graph, season has in total of 13 episodes which is way less than that of season 6,7,8,9 with 25 episodes. This will result in wider variance of predicted mean rating of different season. This is evident from the size vs mean_Rating graph. 
+
+## Model Creation:
+From intial plot distribution it is clear that our target variable rating follows normal distribution. Therefore, the generative model graph for Normal data with many groups mean to compare and an explict parameter can be defined as,
+![graph_model2](multiple_graph.jpeg)
+![graph_model2](pic3.jpeg)
+
+For prioir values 'mu',tau_b and tau_w we can make use of normal, gamma and gamma distribution respectively. I made use of gibbs sampler to model the posterior distribution. And to address the fact of varying size in the sample, it is good to include information from other group in a indirect manner. Here, the population mean 'mu' act as a 'Shrinking Factor'. But in this dataset, since most of the groups are of similar size, the shrinkage in predicted mean rating variance may not be very effective or almost zero.
+## Code:
+```{r include=FALSE}
+set.seed(20301628)
+compare_m_gibbs <- function(y, ind, maxiter = 7000) #Sampling Size = 7000
+{
+  
+  ### weakly informative priors
+  a0 <- 1/2 ; b0 <- 50 ## tau_w hyperparameters
+  eta0 <-1/2 ; t0 <- 50 ## tau_b hyperparameters
+  mu0<-5 ; gamma0 <- 1/4
+  ###
+  
+  ### starting values
+  m <- nlevels(ind)
+  ybar <- theta <- tapply(y, ind, mean)
+  tau_w <- mean(1 / tapply(y, ind, var)) ##within group precision
+  mu <- mean(theta)
+  tau_b <-var(theta) ##between group precision
+  n_m <- tapply(y, ind, length)
+  an <- a0 + sum(n_m)/2
+  ###
+  
+  ### setup MCMC
+  theta_mat <- matrix(0, nrow=maxiter, ncol=m)
+  mat_store <- matrix(0, nrow=maxiter, ncol=3)
+  ###
+  
+  ### MCMC algorithm
+  for(s in 1:maxiter) 
+  {
+    
+    # sample new values of the thetas
+    for(j in 1:m) 
+    {
+      taun <- n_m[j] * tau_w + tau_b
+      thetan <- (ybar[j] * n_m[j] * tau_w + mu * tau_b) / taun
+      theta[j]<-rnorm(1, thetan, 1/sqrt(taun))
+    }
+    
+    #sample new value of tau_w
+    ss <- 0
+    for(j in 1:m){
+      ss <- ss + sum((y[ind == j] - theta[j])^2)
+    }
+    bn <- b0 + ss/2
+    tau_w <- rgamma(1, an, bn)
+    
+    #sample a new value of mu
+    gammam <- m * tau_b + gamma0
+    mum <- (mean(theta) * m * tau_b + mu0 * gamma0) / gammam
+    mu <- rnorm(1, mum, 1/ sqrt(gammam)) 
+    
+    # sample a new value of tau_b
+    etam <- eta0 + m/2
+    tm <- t0 + sum((theta - mu)^2) / 2
+    tau_b <- rgamma(1, etam, tm)
+    
+    #store results
+    theta_mat[s,] <- theta
+    mat_store[s, ] <- c(mu, tau_w, tau_b)
+  }
+  colnames(mat_store) <- c("mu", "tau_w", "tau_b")
+  return(list(params = mat_store, theta = theta_mat))
+}
+
+fit_2 <- compare_m_gibbs(df2$Rating, df2$Season)
+```
+## Results:
+```{r echo=FALSE}
+# Results
+apply(fit_2$params, 2, mean)
+apply(fit_2$params, 2, sd)
+mean(1/sqrt(fit_2$params[, 3]))
+mean(1/sqrt(fit_2$params[, 2]))
+sd(1/sqrt(fit_2$params[, 3]))
+## reformat samples for ggplot
+theta_df <- data.frame(samples = as.numeric(fit_2$theta), 
+                       Season = rep(1:ncol(fit_2$theta), each = nrow(fit_2$theta)))
+theta_med <- apply(theta_df, 2, mean) ## get basic posterior summary
+sort(theta_med, decreasing = TRUE) ## which Seasons did best and worst?
+ggplot(theta_df) + geom_boxplot(aes(x = reorder(Season, samples, median), samples, 
+                                    fill = reorder(Season, samples, median)), show.legend=FALSE)
+theta_hat <- apply(fit_2$theta, 2, mean)
+ggplot(data.frame(size = tapply(df2$Rating, df2$Season, length), theta_hat = theta_hat), aes(size, theta_hat)) + geom_point()
+```
+Explanation:
+As discussed earlier, the posterior graph corresponds to size and theta_hat has no difference from that of previous one. This signifies the shrinkage factor has nullified effect in calculating the conditional mean associated with each group. From box plot distribution of each group, we can observe similar tails signifying the sampling done was mixed well, stationary and coverged. The population mean we got from posterior distribution is 7.0952965 with precision score of 0.2740948 and SD of 1.956227. Here,  I fixed the population mean has the threshold value for above average critieria and figured out episodes whose mean values are above 7.0952965 has superior seasons. The seasons are  12,10,11,1,9,2,3,8,4,6,5,and 7 obtained from theta_hat. This agrees with the widely held view among fans and critics that the earlier Simpsons seasons constituted a “golden age”. Are any seasons particularly superior? Among the above average season selected, the season falls in between 8.0 to 8.5 like 3,8,4,6,5,7 contributes towards higher rating average which can be taken as particularly superior. But picking particular seasons from this group is not conclusive because the SD associated with each season were (1/sqrt(tau_w)) is 0.6 which cause lots of unceratinity. 
+
+
+# Question 2
+# Import Dataset:
+```{r include=FALSE}
+dh <- read.csv("heart_data.csv")
+# Checking for any missing values in the dataset.
+# It is given that, there is no missing values in the dataset.
+head(dh)
+```
+Attribute Information:
+------------------------
+      -- 1. age       
+      -- 2. sex   '1' : Female '2' : Male    
+      -- 3. resting blood pressure (RestBloodPressure)
+      -- 4. serum cholestoral in mg/dl (SerumCholestoral)
+      -- 5. fasting blood sugar > 120 mg/dl (FastingBloodSugar)
+      -- 6. maximum heart rate achieved (MaxHeartRate) 
+      -- 7. exercise induced angina (ExerciseInduced)
+      -- 8. the slope of the peak exercise ST segment (Slope)Value        ‘1’ : downsloping Value ‘2’ : flat Value ‘3’ : upsloping
+      -- 9. number of major vessels (0-3) colored by flourosopy 
+with a target variable class specifying 1 absence of heart disease and 2 signifying presence of heart disease.
+# Exploratory data analysis:
+Checking the structure of our dataset:
+```{r include=FALSE}
+str(dh)
+```
+We can see that all the categorical variables are considered as int too. We use as.factor() function to Convert
+the variable Sex, FastingBloodSugar, ExerciseInduced, Slope, MajorVessels and Class as factors.
+```{r include=FALSE}
+dh$Sex <- as.factor(dh$Sex)
+dh$FastingBloodSugar <- as.factor(dh$FastingBloodSugar)
+dh$ExerciseInduced <- as.factor(dh$ExerciseInduced)
+dh$Slope <- as.factor(dh$Slope)
+dh$MajorVessels <- as.factor(dh$MajorVessels)
+dh$Class <- as.factor(dh$Class)
+str(dh) # Verify if all the factors has been properly converted.
+```
+The dataset dh contains two types of Data in it : 
+1. Numerical Data : Age, RestBloodPressure, SerumCholestral, MaxHeartRate.
+2. categorical Data : Sex, FastingBloodSugar, ExerciseInduced, Slope, MajorVessels, Class.
+We create a user defined function for calculating the Summary Statistics and Histogram distribution for our
+numeric variables.
+numsummary help file:
+Description:
+numsummary prints the mean, median, standard deviation, minimum, maximum values of a given healthy and heart disease patients in the heart dataframe and plots its histogram distribution.
+Usage:
+numsummary(x)
+Arguments:
+x - Column of the heart dataframe
+Details:
+The function numsummary creates a class containing empty list s called Heart Disease.tapply function is implemented for calculating mean, median, standard deviation, minimum and maximum value for patients who are healthy and who have heart disease. We also use ggplot for plotting histogram of each numeric variables.
+```{r echo=FALSE}
+numsummary <- function(var){
+s <- list()
+class(s) <- "Heart Disease"
+s$mean <- tapply(var, dh$Class, mean)
+s$median <- tapply(var, dh$Class, median)
+s$sd <- tapply(var, dh$Class, sd)
+s$min <- tapply(var, dh$Class, min)
+s$max <- tapply(var, dh$Class, max)
+s$plot <- ggplot(dh, aes(var, fill=Class)) +
+geom_histogram() +
+labs(fill="Disease", x=deparse(substitute(var)),y="Number of patients")
+cat("Summary of ",deparse(substitute(var)),":\n")
+#disparse(substitute(var)) is used to get the column name.
+print("Mean:")
+print(s$mean)
+print("Median:")
+print(s$median)
+print("Standard Deviation:")
+print(s$sd)
+print("Minimum value:")
+print(s$min)
+print("Maximum value:")
+print(s$max)
+print(s$plot)
+return(s)
+}
+agesummary = numsummary(dh$Age)
+```
+Summary shows that average age of healthy people is 52.70667 and heart disease patient is 56.59167.The SD value of 9.509830 and 8.1162733 accounts for much higer uncertainity in mean. The minimum age of the person carrying heart disease in our dataset is 35. This clearly shows that people can indeed get heart disease if they live a poor lifestyle eating junk foods.The distribution graph shows clear variation observed in both healthy and heart disease patient making it a good predictor variable.
+```{r}
+cholsummary = numsummary(dh$SerumCholestoral)
+```
+chol represented  in mg/dl. SerumCholestrol level is a measurement of high and low density lipoprotein and the amount of triglycerides present in the blood during checkup. The ideal cholestrol level of a person is less than 170mg/dL. Both Heart disease and Non heart disease cases shows high cholestrol levels of 409 and 564 respectively. And from distribution graph it is clear that high chol observed in healthy patients which might be an outlier and have considerable effort on pushing mean and SD value to higer end side. Apart from that the distributions for both class show clear variation thus making it a good predictor. 
+```{r}
+heartsummary = numsummary(dh$MaxHeartRate)
+```
+The highlighting point here was the mean Maxheart rate observed in patients who are healthy and  having heart disease was found to be 158.333 and 138.8583 which is opposite to that of general trends signifying higher heart rate have more chance of getting heart related issues. Similar breaks in natural trend was also observed in case of minimum value where healthy person have 96 which is greater than 71 for heart disease patitent.From distribution it is clear that any value below 135, the difference in variation between two classes is low and above 130 the two groups are distinguished well. Therefore, it can be considered as a predictor variable.
+```{r}
+trestbpssummary = numsummary(dh$RestBloodPressure)
+```
+trestbps is the resting blood pressure in mm Hg.Summary of trestbps shows us that 50% of the cases had a median of 130 trestbps despite having heart disease or not. ideal blood pressure is considered to be between 90/60mmHg and 120/80mmHg. The maximum trestbps of healthy and heart disease cases is 180 and 200 respectively which indicates that there are hypertensive cases in our dataset. The histogram shows fair variation between both the target class. Therefore, it can be considered as one of the predictor variable.
+Note: The distribution graph for all continous variable forms a normally distributed curve with/without some skewness.
+Identifying if there is any correlation between the numeric variables:
+```{r echo=FALSE, fig.height=8, fig.width=8}
+# install.packages("corrplot")
+library(corrplot)
+M <- cor(dh[,c("Age","RestBloodPressure","SerumCholestoral","MaxHeartRate")])
+corrplot.mixed(M)
+```
+Using cor function, we obtain the correlation between all the numeric variables and stored it in Matrix M. We use the mixed corrplot inside the corrplot library for visualizing the matrix. All of the numeric variables seem to be weakly correlated with each other except Age and MaxHeartRate with negative correlation value of 0.40 but even those cor values are in considerable border range. Thus we will not be facing any multicollinearity issues with our model.
+## SmartEDA package:
+We perform Exploratory Data Analysis for Categorical variables using SmartEDA package.It includes multiple custom functions to perform initial exploratory analysis on any input data describing the structure and
+the relationships present in the data. The capabilities and functionalities of SmartEDA are:
+1.SmartEDA functions automatically categorize all the features into the right data type (Character, Numeric,
+Factor etc.) based on the input data.
+2.It helps in getting the complete exploratory data analysis just by running the function instead of writing
+lengthy r code.
+3.ggplot2 functions are used for graphical presentation of data.
+Loading the SmartEDA package:
+ExpCatStat Function is useful for Checking the degree of Association between Categorical Explanatory
+variables with our predictor variable “Class”
+```{r echo=FALSE}
+# install.packages("SmartEDA")
+library(SmartEDA)
+ExpCatStat(dh,Target="Class",result = "Stat")
+```
+Explanation:
+The function performs Chi Square Test for our Categorical Data with respect to the Target variable. ChiSquare test is a Statistical test used for comparing if the observed frequency in explanatory variables compares with the expected frequency of categorical variable.A low Chi Square value would mean a high correlation between the explanatory and the Class variable. Out of all the categorical variables, Sex and FastingBloodSugar seems to have a high correlation with ou Class variable.
+Informational value(IV) is a measure of how well our explanatory variable can differentiate between healthy and heart disease cases. IV values of FastingBlood sugar variables is zero which means that our categorical data will have difficulty in accurately predicting the heart disease.
+Cramers V is a measure of association between two Nominal Variables in the range 0 to 1. Except FastingBloodSugar all other categorical variables seems to have a high correlation with our Class variables.
+Since, FastingBloodSugar variable valies for IV value, Cramers V are not good I removed it from the predictor variable list.
+Distribution of all the categorical variable with respect to Healthy / Health disease cases is given by:
+
+```{r echo=FALSE}
+dh <- dh[-c(5)] # Removing FastingBloodSugar column since it carry no valuable information.
+ExpCatViz(dh,target="Class",col=c("red","blue"))
+```
+Explnation:
+Sex:
+Most of the patients with heart disease are class2[Male](83%) with a few females. Class2 seems to contract more Heart Disease (66%) than their class1 counterparts.
+ExcerciseInduced:
+It checks if exercising induces any chest pain for the patients. This is a very good predictor for our model as Class2 does cause Angina for most of the heart disease patients.
+Slope:
+The type of slope in ST segment of ECG during exercise. For most of the heart disease individuals, the slope seems to be class 2 with 65% and little bit of class 3. Thus making it as a good explanatory variable.
+MajorVessels:
+Vessel type of 2,3,4 contribute more towards heart dissease, whereas vessel 1 condition favors more for healthy person. These difference in all observed levels are good to predict the 'Class'. 
+
+# Model build:
+
+```{r echo=FALSE}
+library(rstanarm) ## This fits common statistical models using STAN.
+library(bayesplot) ## used this package for plotting results
+library(caret)
+# Standerizing the numeric data to makes prior specification more robust.
+index <- createDataPartition(dh$Class, p = .8, list = FALSE)
+dh = rapply(dh,scale,c("numeric","integer"),how="replace")
+str(dh)
+
+# Train test split with 80/20. 
+set.seed(20301628)
+dh.train <- dh[ index,]
+dh.test <- dh[-index,]
+
+# Model1: MCMC
+fit_glm <- stan_glm(Class ~ ., data = dh.train , family = binomial(), seed = 20301628) ## fit model
+summary(fit_glm, digits = 5)
+# Plotting the posterior distribution for each variable.
+plot(fit_glm, plotfun = "trace")
+plot(fit_glm, plotfun = "dens")
+# Function to find Correlation between the predictor variables.
+fit_glm_params <- as.data.frame(fit_glm)
+cor(fit_glm_params) ## how correlated are parameters.
+
+# Performing leave one out cross validation using loo package.
+print("MCMC:LeaveOneOut CV")
+(loo1 <- loo(fit_glm, save_psis = TRUE))
+
+# Model2: Baseline
+fit_base <- update(fit_glm, formula = Class ~ 1, QR = FALSE)
+print("Baseline:LeaveOneOut CV")
+(loo0 <- loo(fit_base))
+
+# Model Comparison [MCMC vs Baseline]
+print("Model_Comparison")
+loo_compare(loo0, loo1)
+
+# Train_dataset evaluation using MCMC model.
+print("Train_Dataset")
+pred_disesase <- predict(fit_glm, type = "response") ## this is on prob scale
+summary(pred_disesase)
+boxplot(pred_disesase ~ dh.train$Class)
+plot(density(pred_disesase),
+     main = "Density curve showing the mean probability each patient \nin train set will churn")
+table(pred_disesase > 0.5, dh.train$Class) ## Since it is a binary target variable, its wise to choose 0.5 has treshold value.
+Accuracy_Train <- 182/216
+print("Accuracy_train:")
+Accuracy_Train
+
+# Test_dataset evaluation using MCMC model.
+print("Test_Dataset")
+test_pred <- posterior_predict(fit_glm, newdata =dh.test, transform=TRUE)
+summary(test_pred[1,])
+
+test_mean <- colMeans(test_pred)
+plot(density(test_mean),
+     main = "Density curve showing the mean probability each patient \nin test set will churn")
+table(dh.test$Class, test_mean > 0.5)
+Accuracy_Test <- 43/54
+print("Accuracy_test:")
+Accuracy_Test
+```
+
+Explanation:
+Initially, all the required library packages like rtanarm and bayesplot are installed.
+All the numeric values are standerized to its mean by making use of scaling function. The categorical variables are feeded into the model in a one hot encoding manner.
+Now the given dataset was splitted into train and test with 80/20 ratio under specific seed value.
+Later, I fitted the model on train data using stan_glm function with defualt prior paramater values and the summary of model fitted was printed. The important parameters to predict the target 'Class'[Having Heart Disease is taken as reference variable since it holds maximum categorical value '2'] variables are age, Sex2, RestBloodPressure, SerumCholestoral, MaxHeartRate, ExerciseInduced2, Slope2, Slope3, MajorVesssels2, 3 and 4 which coincide with our Exploratory data analysis outcome. On the other hand the model built considered every first category of each categorical explanatory variable has reference [I.e. Sex1,ExerciseInduced1, Slpoe 1, MajorVessel 1]. 
+Interpretation of Mean Co-efficients:
+For intercept: It is the expected value of Y holding all other variables fixed when X(j) is not in the reference category. Therefore, the log-odds of survival is -3.82205 which contributes to 2.14% chance of getting heart disease.
+For Categorical predictors:
+For sex2: The difference in the log-odds of heart disease between Sex1 and Sex2 is 2.12125 i.e. the chance of getting heart disease is higher for Sex2 than for Sex1.
+For ExerciseInduced2 : This value signifies on jump from reference variable ExerciseInduced1 to ExerciseInduced2 will increase the target reference(i.e heart disease) by log-odds estimate = 1.29805
+For Slope2 and Slope3: For each of the other Slope groups, the mean estimates tells us that the log-odds of heart disease for a given group increases than that of reference group Slope1. 
+For MixedVessels2,3 and 4: Among these, MixedVessels3 show major increases in log-odds of heart disease by 3.85956 followed by MixedVessels2 with log-odds of heart disease increases by 2.88096 with respective to reference predictor MixedVessels1.
+Numerical Predictors:
+For Age: 0ne unit increase in age than the log-odds of heart disease decreases by -0.39374 keeping all other predictor coefficients fixed. I.e.the chance of getting heart diseases decreases as patient age increases.
+For RestBloodPressure: 0ne unit increase in RestBloodPressure than there is increase of log-odds by 0.35374 over target heart patients keeping all other predictor coefficients fixed. I.e.the chance of getting heart diseases increases as patient RestBloodPressure increases.
+For SerumCholestoral: For 0ne unit increase in SerumCholestoral than there is increase of log-odds by 0.64257 over target heart patients keeping all other predictor coefficients fixed.I.e.the chance of getting heart diseases increases as patient SerumCholestrol increases.
+For MaxHeartRate: 0ne unit increase in age than the log-odds of heart disease decreases by -0.90211 keeping all other predictor coefficients fixed. I.e.the chance of getting heart diseases decreases as patient MaxHeartRate increases.
+From the summary, its  clear that for the majority of predictor variable the SD values are high attributing to more uncertainity towards the estimated mean which should be accounted. On taking SD into account, all Classes of Majorvessels[I.e 2,3,4] and Sex[I.e 2], MaxHeartRate are found to be more important to predict heart disease with more significant mean value estimation. From correlation, all the values are admissable or very minimally correlated. So there is no colinearity issue in generated samples.From trace plots and posterior distribution graph its clear that the chains for all predictor variables are stationary and converged.  
+Later on,to evaluate the model I made use of rstanarm which supports loo package which implements fast Pareto smoothed leave-one-out cross-validation to compute expected log predictive density (elpd).[I.e. which is a method for estimating out of sample predictive performance]. The estimates are good as we got PSIS-LOO result is reliable as all Pareto k estimates are small (k< 0.7). Next, I built a baseline model without any covariates and comapare it with the MCMC model which was already built using LOO package. These results favor fit_glm over fit_base, as the estimated difference in elpd (the expected log pointwise predictive density for a new dataset) is so much larger than its standard error. LOO penalizes models for adding additional predictors (this helps counter overfitting), but in this case fit_glm represents enough of an improvement over fit_base that the penalty for including predictor variables are negligible.
+Atlast, I recorded the model built performance over train dataset and got an accuracy score of 84.25% and plotted a boxplot and density distribution graph of probability. Here for classification, I fixed a threshold value of 0.5(I.e >0.5 - heart disease and <0.5 healthy) since we are dealing with  binary Target variable. On debugging the box plot, the model performed well in classifying class 1 than in class 2 because the predicted probabilities values are accumulated below 0.5 with some outliers specifying misclassification in the model. On the other hand the concentration of distribution on class 2 breaches 0.5 mark and venture down. The possible reason might be because of less training data points which is evident from the confusion matrix table. On test data, we got accuracy score of 79.62% and on comparing the probability density graph for train and test its clear that our model does not fall into the catgory of over fitting. 
+To conclude, I succesfully made use of bayesian approach to build and evaluate the logistic model to predict heart patients. In addition, I also outlined the important risk factors that contribute more towards this evaluation. 
