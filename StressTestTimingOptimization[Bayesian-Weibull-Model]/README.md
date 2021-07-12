@@ -13,7 +13,8 @@ Let SS be the number of units that failed in stress testing, and
 Let SS’ be the number of units that are not considered as Latent failure, but fail in the stress testing.
 
 ## Workflow:
-Diagram:
+![image](estscreenshot.PNG)
+
 
 
 ## Bayesian-approach:
